@@ -4,46 +4,47 @@ import json
 
 logger = logging.getLogger(__name__)
 
-BASE_URL = "https://captain.sapimu.au/dramawave"
-TOKEN = "5cf419a4c7fb1c8585314b9f797bf77e7b10a705f32c91aac65b901559780e12"
-
-async def get_headers():
-    return {
-        "Authorization": f"Bearer {TOKEN}"
-    }
+BASE_URL = "https://dramawave.dramabos.my.id/api"
+TOKEN = "A8D6AB170F7B89F2182561D3B32F390D"
 
 async def get_popular_feed(page=1):
-    """Fetches popular dramas from DramaWave API."""
-    url = f"{BASE_URL}/api/v1/feed/popular"
-    params = {
-        "page": page,
-        "lang": "id-ID"
-    }
+    """Fetches popular/recommended dramas from the new DramaWave API."""
+    # We can use /recommend or /home. /recommend works well across pages if needed.
+    # The API documentation says 'next' for pagination (ex: 10, 20, 40...)
+    # We will just fetch without next for the main feed, or use home.
+    # We'll fetch from /home and flatten it.
+    url = f"{BASE_URL}/home"
+    params = {"lang": "in"}
     
     async with httpx.AsyncClient(timeout=30) as client:
         try:
-            response = await client.get(url, params=params, headers=await get_headers())
+            response = await client.get(url, params=params)
             response.raise_for_status()
             data = response.json()
-            # Handle possible structures: data['data']['items'] or data['data'] as list
-            inner_data = data.get("data", {})
-            if isinstance(inner_data, list):
-                return inner_data
-            if isinstance(inner_data, dict):
-                return inner_data.get("items", []) or inner_data.get("list", [])
-            return []
+            
+            dramas = []
+            modules = data.get("data", [])
+            for module in modules:
+                if "items" in module and isinstance(module["items"], list):
+                    for item in module["items"]:
+                        if item.get("playlet_id") or item.get("id"):
+                            dramas.append(item)
+            return dramas
         except Exception as e:
             logger.error(f"Error fetching popular feed: {e}")
             return []
 
 async def get_drama_detail(drama_id: str):
-    """Fetches drama detail from DramaWave API."""
-    url = f"{BASE_URL}/api/v1/dramas/{drama_id}"
-    params = {"lang": "id-ID"}
+    """Fetches drama detail and ALL episodes from new DramaWave API."""
+    url = f"{BASE_URL}/drama/{drama_id}"
+    params = {
+        "lang": "in",
+        "code": TOKEN
+    }
     
     async with httpx.AsyncClient(timeout=30) as client:
         try:
-            response = await client.get(url, params=params, headers=await get_headers())
+            response = await client.get(url, params=params)
             response.raise_for_status()
             data = response.json()
             return data.get("data")
@@ -51,40 +52,36 @@ async def get_drama_detail(drama_id: str):
             logger.error(f"Error fetching drama detail for {drama_id}: {e}")
             return None
 
-async def get_episode_data(drama_id: str, episode_num: int):
-    """Fetches play URL and subtitles for a specific episode."""
-    url = f"{BASE_URL}/api/v1/dramas/{drama_id}/play/{episode_num}"
-    params = {"lang": "id-ID"}
-    
-    async with httpx.AsyncClient(timeout=30) as client:
-        try:
-            response = await client.get(url, params=params, headers=await get_headers())
-            response.raise_for_status()
-            data = response.json()
-            return data.get("data")
-        except Exception as e:
-            logger.error(f"Error fetching play data for {drama_id} Ep {episode_num}: {e}")
-            return None
-
 async def search_drama(query: str):
     """Searches for a drama by name."""
-    url = f"{BASE_URL}/api/v1/search"
+    url = f"{BASE_URL}/search"
     params = {
         "q": query,
-        "lang": "id-ID"
+        "lang": "in"
     }
     
     async with httpx.AsyncClient(timeout=30) as client:
         try:
-            response = await client.get(url, params=params, headers=await get_headers())
+            response = await client.get(url, params=params)
             response.raise_for_status()
             data = response.json()
-            inner_data = data.get("data", {})
-            if isinstance(inner_data, list):
-                return inner_data
-            if isinstance(inner_data, dict):
-                return inner_data.get("items", []) or inner_data.get("list", [])
-            return []
+            return data.get("data", {}).get("items", [])
         except Exception as e:
             logger.error(f"Error searching drama '{query}': {e}")
             return []
+
+# The episode data is now included in the detail.
+# We modify get_episode_data to just return an episode from the detail since it's already fetched,
+# or we just remove it and refactor main.py to use detail["items"].
+async def get_episode_data(drama_id: str, ep_num: int):
+    """Fetches episode data. Since all episodes are in detail, we must fetch detail first."""
+    detail = await get_drama_detail(drama_id)
+    if not detail or "items" not in detail:
+        return None
+    
+    # ep_num is 1-indexed. Let's find the episode in the items list.
+    # Usually they are ordered or we use index.
+    items = detail.get("items", [])
+    if ep_num - 1 < len(items):
+        return items[ep_num - 1]
+    return None

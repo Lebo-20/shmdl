@@ -134,28 +134,34 @@ async def process_drama_full(drama_id, chat_id, status_msg=None):
         os.makedirs(video_dir, exist_ok=True)
 
         # 3. Download episodes (1 -> total_eps)
-        # Using semaphore for concurrency management
+        # We fetch detail once to get all items
+        detail_items = detail.get("items", [])
+        total_eps = len(detail_items) if detail_items else total_eps
+        
         semaphore = asyncio.Semaphore(5)
         
         async def download_task(ep_num):
             async with semaphore:
-                play_data = await get_episode_data(drama_id, ep_num)
-                if not play_data: return False
+                # ep_num is 1-indexed, get from detail_items directly instead of making an API call per ep
+                if ep_num - 1 >= len(detail_items):
+                    return False
+                play_data = detail_items[ep_num - 1]
                 
-                # In DramaWave, play_data usually contains 'video_url' and 'subtitles'
-                video_url = play_data.get("video_url") or play_data.get("url")
-                sub_list = play_data.get("subtitles") or play_data.get("subtitle") or []
+                # In the new Dramabos API, video comes from 1080p_mp4, or fallback
+                video_url = play_data.get("1080p_mp4") or play_data.get("720p_mp4") or play_data.get("video_url")
+                sub_list = play_data.get("subtitle_list") or []
                 
                 # Fetch Indonesian subtitle if available
                 sub_url = None
                 if isinstance(sub_list, list):
                     for s in sub_list:
                         # Priority: id-ID, then id, then English as fallback
-                        if s.get("lang") in ["id-ID", "id"]:
-                            sub_url = s.get("url")
+                        lang = s.get("language") or s.get("lang") or ""
+                        if lang in ["id-ID", "id", "in"]:
+                            sub_url = s.get("subtitle") or s.get("vtt")
                             break
                     if not sub_url and sub_list:
-                        sub_url = sub_list[0].get("url") # Take first as fallback
+                        sub_url = sub_list[0].get("subtitle") or sub_list[0].get("vtt") # Take first as fallback
                 
                 if not video_url: return False
                 return await download_episode_with_subs(ep_num, video_url, sub_url, video_dir)
@@ -210,7 +216,7 @@ async def auto_mode_loop():
             for drama in dramas:
                 if not BotState.is_auto_running: break
                 
-                drama_id = drama.get("id")
+                drama_id = drama.get("playlet_id") or drama.get("id") or drama.get("key")
                 if not drama_id:
                     logger.warning(f"Drama found with no ID: {drama}")
                     continue
