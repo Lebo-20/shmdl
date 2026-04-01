@@ -1,67 +1,54 @@
 import os
 import asyncio
-import httpx
+import subprocess
 import logging
 
 logger = logging.getLogger(__name__)
 
-async def download_file(client: httpx.AsyncClient, url: str, path: str, progress_callback=None):
-    """Downloads a single file with potential progress tracking."""
+async def aria2c_download(url: str, path: str):
+    """Downloads a file using aria2c for speed and robustness."""
+    dir_name = os.path.dirname(path)
+    file_name = os.path.basename(path)
+    
+    # -x 16 (max connections per server), -s 16 (split files), -k 1M (min split size)
+    command = [
+        "aria2c", 
+        "-x", "16", 
+        "-s", "16", 
+        "-k", "1M",
+        "--dir", dir_name,
+        "--out", file_name,
+        "--allow-overwrite=true",
+        url
+    ]
+    
     try:
-        async with client.stream("GET", url) as response:
-            response.raise_for_status()
-            
-            total_size = int(response.headers.get("Content-Length", 0))
-            download_size = 0
-            
-            with open(path, "wb") as f:
-                async for chunk in response.aiter_bytes():
-                    f.write(chunk)
-                    download_size += len(chunk)
-                    if progress_callback:
-                        await progress_callback(download_size, total_size)
+        # Using subprocess for aria2c
+        process = await asyncio.create_subprocess_exec(
+            *command,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE
+        )
+        
+        stdout, stderr = await process.communicate()
+        
+        if process.returncode != 0:
+            logger.error(f"aria2c failed for {url}:\n{stderr.decode()}")
+            return False
         return True
     except Exception as e:
-        logger.error(f"Failed to download {url}: {e}")
+        logger.error(f"Error during aria2c download for {url}: {e}")
         return False
 
-async def download_all_episodes(episodes, download_dir: str, semaphore_count: int = 5):
-    """
-    Downloads all episodes concurrently.
-    episodes: list of dicts with 'episodeNum' and 'playUrl' (or similar based on API)
-    """
-    os.makedirs(download_dir, exist_ok=True)
-    semaphore = asyncio.Semaphore(semaphore_count)
-
-    tasks = []
+async def download_episode_with_subs(ep_num: int, video_url: str, sub_url: str, download_dir: str):
+    """Downloads video and subtitle for a specific episode."""
+    ep_str = str(ep_num).zfill(3)
+    video_path = os.path.join(download_dir, f"ep_{ep_str}.mp4")
+    sub_path = os.path.join(download_dir, f"ep_{ep_str}.srt")
     
-    async def limited_download(ep):
-        async with semaphore:
-            # Sort episodes by episodeNum
-            ep_num = str(ep.get('episode', 'unk')).zfill(3)
-            filename = f"episode_{ep_num}.mp4"
-            filepath = os.path.join(download_dir, filename)
-            
-            url = None
-            videos = ep.get('videos', [])
-            if isinstance(videos, list) and videos:
-                # Prefer highest quality, or just the first in the list 
-                # (API seems to sort them descending by quality usually)
-                url = videos[0].get('url')
-                for video in videos:
-                    if video.get('quality') in ['1080P', '720P']:
-                        url = video.get('url')
-                        break
-
-            if not url:
-                logger.error(f"No URL found for episode {ep_num}")
-                return False
-                
-            async with httpx.AsyncClient(timeout=60) as client:
-                success = await download_file(client, url, filepath)
-                if success:
-                    logger.info(f"Downloaded {filename}")
-                return success
-
-    results = await asyncio.gather(*(limited_download(ep) for ep in episodes))
+    tasks = [aria2c_download(video_url, video_path)]
+    if sub_url:
+        tasks.append(aria2c_download(sub_url, sub_path))
+        
+    results = await asyncio.gather(*tasks)
     return all(results)
