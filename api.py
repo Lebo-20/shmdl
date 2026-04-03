@@ -4,17 +4,13 @@ import json
 
 logger = logging.getLogger(__name__)
 
-BASE_URL = "https://dramawave.dramabos.my.id/api"
+BASE_URL = "https://shortmax.dramabos.my.id/api/v1"
 TOKEN = "A8D6AB170F7B89F2182561D3B32F390D"
 
 async def get_popular_feed(page=1):
-    """Fetches popular/recommended dramas from the new DramaWave API."""
-    # We can use /recommend or /home. /recommend works well across pages if needed.
-    # The API documentation says 'next' for pagination (ex: 10, 20, 40...)
-    # We will just fetch without next for the main feed, or use home.
-    # We'll fetch from /home and flatten it.
-    url = f"{BASE_URL}/home"
-    params = {"lang": "in"}
+    """Fetches popular dramas from the Shortmax v1 API."""
+    url = f"{BASE_URL}/popular"
+    params = {"lang": "id", "page": page}
     
     async with httpx.AsyncClient(timeout=30) as client:
         try:
@@ -22,23 +18,21 @@ async def get_popular_feed(page=1):
             response.raise_for_status()
             data = response.json()
             
-            dramas = []
-            modules = data.get("data", [])
-            for module in modules:
-                if "items" in module and isinstance(module["items"], list):
-                    for item in module["items"]:
-                        if item.get("playlet_id") or item.get("id"):
-                            dramas.append(item)
-            return dramas
+            res_data = data.get("data", [])
+            if isinstance(res_data, dict):
+                return res_data.get("items") or res_data.get("list") or []
+            return res_data
         except Exception as e:
             logger.error(f"Error fetching popular feed: {e}")
             return []
 
 async def get_drama_detail(drama_id: str):
-    """Fetches drama detail and ALL episodes from new DramaWave API."""
-    url = f"{BASE_URL}/drama/{drama_id}"
+    """Fetches drama detail and ALL episodes from Shortmax v1 API."""
+    # Using /alleps because it's the endpoint that takes the token ('code')
+    # and typically returns episode/play data.
+    url = f"{BASE_URL}/alleps/{drama_id}"
     params = {
-        "lang": "in",
+        "lang": "id",
         "code": TOKEN
     }
     
@@ -53,11 +47,11 @@ async def get_drama_detail(drama_id: str):
             return None
 
 async def search_drama(query: str):
-    """Searches for a drama by name."""
+    """Searches for a drama by name using the Shortmax v1 API."""
     url = f"{BASE_URL}/search"
     params = {
         "q": query,
-        "lang": "in"
+        "lang": "id"
     }
     
     async with httpx.AsyncClient(timeout=30) as client:
@@ -65,7 +59,10 @@ async def search_drama(query: str):
             response = await client.get(url, params=params)
             response.raise_for_status()
             data = response.json()
-            return data.get("data", {}).get("items", [])
+            res_data = data.get("data", [])
+            if isinstance(res_data, dict):
+                return res_data.get("items") or res_data.get("list") or []
+            return res_data
         except Exception as e:
             logger.error(f"Error searching drama '{query}': {e}")
             return []
@@ -76,12 +73,20 @@ async def search_drama(query: str):
 async def get_episode_data(drama_id: str, ep_num: int):
     """Fetches episode data. Since all episodes are in detail, we must fetch detail first."""
     detail = await get_drama_detail(drama_id)
-    if not detail or "items" not in detail:
+    if not detail or "episodes" not in detail:
         return None
     
-    # ep_num is 1-indexed. Let's find the episode in the items list.
-    # Usually they are ordered or we use index.
-    items = detail.get("items", [])
-    if ep_num - 1 < len(items):
-        return items[ep_num - 1]
+    # ep_num is 1-indexed. Let's find the episode in the episodes list.
+    episodes = detail.get("episodes", [])
+    if ep_num - 1 < len(episodes):
+        ep = episodes[ep_num - 1]
+        # In v1 API, 'video' is a dict of qualities: {"video_720": "...", "video_480": "..."}
+        video_data = ep.get("video")
+        if isinstance(video_data, dict):
+            # Try 720, then 480, then first available
+            url = video_data.get("video_720") or video_data.get("video_480") or next(iter(video_data.values()), None)
+            ep["video_url"] = url 
+        elif isinstance(video_data, str):
+            ep["video_url"] = video_data
+        return ep
     return None

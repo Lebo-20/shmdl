@@ -6,7 +6,7 @@ import logging
 
 logger = logging.getLogger(__name__)
 
-async def upload_progress(current, total, event, msg_text="Uploading..."):
+async def upload_progress(current, total, event, msg_text="Mengunggah..."):
     """Callback function for upload progress."""
     percentage = (current / total) * 100
     try:
@@ -99,7 +99,7 @@ async def upload_drama(client: TelegramClient, chat_id: int,
             force_document=False, # FORCE IT AS VIDEO STREAM
             thumb=thumb_path,
             attributes=video_attributes,
-            progress_callback=lambda c, t: upload_progress(c, t, status_msg, "Upload Video:"),
+            progress_callback=lambda c, t: upload_progress(c, t, status_msg, "Unggah Video:"),
             supports_streaming=True
         )
         

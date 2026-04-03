@@ -6,24 +6,32 @@ import logging
 logger = logging.getLogger(__name__)
 
 async def aria2c_download(url: str, path: str):
-    """Downloads a file using aria2c for speed and robustness."""
+    """Downloads a file using aria2c or ffmpeg (for m3u8)."""
     dir_name = os.path.dirname(path)
     file_name = os.path.basename(path)
     
-    # -x 16 (max connections per server), -s 16 (split files), -k 1M (min split size)
-    command = [
-        "aria2c", 
-        "-x", "16", 
-        "-s", "16", 
-        "-k", "1M",
-        "--dir", dir_name,
-        "--out", file_name,
-        "--allow-overwrite=true",
-        url
-    ]
+    # If it's an m3u8, use ffmpeg to download
+    if ".m3u8" in url.split("?")[0]:
+        logger.info(f"M3U8 detected, using ffmpeg for {file_name}")
+        command = [
+            "ffmpeg", "-y", "-i", url,
+            "-c", "copy", "-bsf:a", "aac_adtstoasc",
+            path
+        ]
+    else:
+        # -x 16 (max connections per server), -s 16 (split files), -k 1M (min split size)
+        command = [
+            "aria2c", 
+            "-x", "16", 
+            "-s", "16", 
+            "-k", "1M",
+            "--dir", dir_name,
+            "--out", file_name,
+            "--allow-overwrite=true",
+            url
+        ]
     
     try:
-        # Using subprocess for aria2c
         process = await asyncio.create_subprocess_exec(
             *command,
             stdout=asyncio.subprocess.PIPE,
@@ -33,11 +41,11 @@ async def aria2c_download(url: str, path: str):
         stdout, stderr = await process.communicate()
         
         if process.returncode != 0:
-            logger.error(f"aria2c failed for {url}:\n{stderr.decode()}")
+            logger.error(f"process failed for {url}:\n{stderr.decode()}")
             return False
         return True
     except Exception as e:
-        logger.error(f"Error during aria2c download for {url}: {e}")
+        logger.error(f"Error during process download for {url}: {e}")
         return False
 
 async def download_episode_with_subs(ep_num: int, video_url: str, sub_url: str, download_dir: str):

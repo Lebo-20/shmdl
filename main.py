@@ -54,9 +54,9 @@ class BotState:
 client = TelegramClient('dramawave_bot', API_ID, API_HASH).start(bot_token=BOT_TOKEN)
 
 def get_panel_buttons():
-    status_text = "🟢 RUNNING" if BotState.is_auto_running else "🔴 STOPPED"
+    status_text = "🟢 BERJALAN" if BotState.is_auto_running else "🔴 BERHENTI"
     return [
-        [Button.inline("▶️ Start Auto", b"start_auto"), Button.inline("⏹ Stop Auto", b"stop_auto")],
+        [Button.inline("▶️ Mulai Auto", b"start_auto"), Button.inline("⏹ Hentikan Auto", b"stop_auto")],
         [Button.inline(f"📊 Status: {status_text}", b"status")]
     ]
 
@@ -83,22 +83,101 @@ async def panel_callback(event):
     data = event.data
     if data == b"start_auto":
         BotState.is_auto_running = True
-        await event.answer("Auto-mode started!")
+        await event.answer("Mode Otomatis dimulai!")
     elif data == b"stop_auto":
         BotState.is_auto_running = False
-        await event.answer("Auto-mode stopped!")
+        await event.answer("Mode Otomatis dihentikan!")
     elif data == b"status":
-        await event.answer(f"Status: {'Running' if BotState.is_auto_running else 'Stopped'}")
+        await event.answer(f"Status: {'Berjalan' if BotState.is_auto_running else 'Berhenti'}")
     
     await event.edit("🎛 **DramaWave Control Panel**", buttons=get_panel_buttons())
 
+import re
+
 @client.on(events.NewMessage(pattern='/start'))
 async def start(event):
-    await event.reply("Welcome to DramaWave Downloader Bot! 🎉\n\nGunakan perintah `/download {ID}` untuk mulai.")
+    await event.reply("Selamat datang di Bot Downloader DramaWave! 🎉\n\nGunakan perintah `/cari {judul}` atau `/download {ID}` untuk mulai.")
+
+@client.on(events.NewMessage(pattern=r'/cari (.+)'))
+async def on_search(event):
+    query = event.pattern_match.group(1)
+    status_msg = await event.reply(f"🔍 Mencari dramas untuk: `{query}`...")
+    
+    try:
+        results = await search_drama(query)
+        if not results:
+            await status_msg.edit(f"❌ Tidak ditemukan hasil untuk `{query}`.")
+            return
+            
+        # Display top results
+        text = f"✨ **Hasil Pencarian: {query}**\n\n"
+        
+        for i, drama in enumerate(results[:8]):
+            title = drama.get("name") or drama.get("title") or "Tidak Diketahui"
+            drama_id = str(drama.get("playlet_id") or drama.get("id") or drama.get("code") or drama.get("key"))
+            ep_count = drama.get("totalEpisodes") or drama.get("max_episode") or "?"
+            
+            text += f"{i+1}. **{title}** (Eps: {ep_count})\nID: `{drama_id}`\n"
+            
+            buttons = [Button.inline(f"📥 Download", data=f"dl_{drama_id}")]
+            # Only add Channel button for admin
+            if event.sender_id == ADMIN_ID:
+                buttons.append(Button.inline(f"📢 Post ke Channel", data=f"post_{drama_id}"))
+            
+            await event.reply(f"🎬 **{title}**\nEps: {ep_count}\nID: `{drama_id}`", buttons=buttons)
+            
+        await status_msg.delete()
+    except Exception as e:
+        logger.error(f"Search error: {e}")
+        await status_msg.edit(f"❌ Terjadi kesalahan saat mencari: {e}")
+
+@client.on(events.CallbackQuery(data=re.compile(b"dl_(.+)")))
+async def on_dl_callback(event):
+    drama_id = event.data.decode().replace("dl_", "")
+    
+    if BotState.is_processing:
+        await event.answer("⚠️ Sedang memproses drama lain. Mohon tunggu.", alert=True)
+        return
+        
+    await event.answer("Memulai download...")
+    status_msg = await event.reply(f"🔍 Menyiapkan download untuk ID `{drama_id}`...")
+    
+    BotState.is_processing = True
+    success = await process_drama_full(drama_id, event.chat_id, status_msg)
+    BotState.is_processing = False
+    
+    if success:
+        processed_ids.add(drama_id)
+        save_processed(processed_ids)
+
+@client.on(events.CallbackQuery(data=re.compile(b"post_(.+)")))
+async def on_post_callback(event):
+    if event.sender_id != ADMIN_ID:
+        await event.answer("⚠️ Hanya Admin yang bisa posting ke channel.", alert=True)
+        return
+        
+    drama_id = event.data.decode().replace("post_", "")
+    
+    if BotState.is_processing:
+        await event.answer("⚠️ Sedang memproses drama lain.", alert=True)
+        return
+        
+    await event.answer("Memulai posting ke channel...")
+    status_msg = await event.reply(f"🚀 Memproses `{drama_id}` untuk channel...")
+    
+    BotState.is_processing = True
+    success = await process_drama_full(drama_id, AUTO_CHANNEL, status_msg)
+    BotState.is_processing = False
+    
+    if success:
+        processed_ids.add(drama_id)
+        save_processed(processed_ids)
 
 @client.on(events.NewMessage(pattern=r'/download ([\w-]+)'))
 async def on_download(event):
-    if event.chat_id != ADMIN_ID: return
+    if not event.is_group and event.chat_id != ADMIN_ID:
+        return
+        
     if BotState.is_processing:
         await event.reply("⚠️ Sedang memproses drama lain.")
         return
@@ -114,6 +193,25 @@ async def on_download(event):
         processed_ids.add(drama_id)
         save_processed(processed_ids)
 
+@client.on(events.NewMessage(pattern=r'/post ([\w-]+)'))
+async def on_post(event):
+    if event.sender_id != ADMIN_ID: return
+        
+    if BotState.is_processing:
+        await event.reply("⚠️ Sedang memproses drama lain.")
+        return
+        
+    drama_id = event.pattern_match.group(1)
+    status_msg = await event.reply(f"🚀 Memproses `{drama_id}` untuk Channel...")
+    
+    BotState.is_processing = True
+    success = await process_drama_full(drama_id, AUTO_CHANNEL, status_msg)
+    BotState.is_processing = False
+    
+    if success:
+        processed_ids.add(drama_id)
+        save_processed(processed_ids)
+
 async def process_drama_full(drama_id, chat_id, status_msg=None):
     """DramaWave Pipeline: Fetch -> Download with Subs -> Burn Subtitles -> Merge -> Upload."""
     try:
@@ -123,19 +221,19 @@ async def process_drama_full(drama_id, chat_id, status_msg=None):
             return False
 
         title = detail.get("name") or detail.get("title") or f"Drama_{drama_id}"
-        description = detail.get("description") or detail.get("intro") or "No description."
+        description = detail.get("description") or detail.get("intro") or detail.get("summary") or "Tidak ada deskripsi."
         poster = detail.get("cover") or detail.get("poster") or ""
         total_eps = detail.get("episodes_count") or detail.get("max_episode") or 0
         
-        if status_msg: await status_msg.edit(f"🎬 Processing **{title}** ({total_eps} episodes)...")
+        if status_msg: await status_msg.edit(f"🎬 Memproses **{title}** ({total_eps} episode)...")
 
         temp_dir = tempfile.mkdtemp(prefix=f"dw_{drama_id}_")
         video_dir = os.path.join(temp_dir, "episodes")
         os.makedirs(video_dir, exist_ok=True)
 
         # 3. Download episodes (1 -> total_eps)
-        # We fetch detail once to get all items
-        detail_items = detail.get("items", [])
+        # We fetch detail once to get all episodes
+        detail_items = detail.get("episodes", [])
         total_eps = len(detail_items) if detail_items else total_eps
         
         semaphore = asyncio.Semaphore(5)
@@ -147,9 +245,19 @@ async def process_drama_full(drama_id, chat_id, status_msg=None):
                     return False
                 play_data = detail_items[ep_num - 1]
                 
-                # In the new Dramabos API, video comes from 1080p_mp4, or fallback
-                video_url = play_data.get("1080p_mp4") or play_data.get("720p_mp4") or play_data.get("video_url")
-                sub_list = play_data.get("subtitle_list") or []
+                # Extraction logic for version 1 API
+                video_val = play_data.get("video")
+                video_url = None
+                if isinstance(video_val, dict):
+                    video_url = video_val.get("video_720") or video_val.get("video_480") or next(iter(video_val.values()), None)
+                elif isinstance(video_val, str):
+                    video_url = video_val
+                
+                # Fallback for old structure
+                if not video_url:
+                    video_url = play_data.get("1080p_mp4") or play_data.get("720p_mp4") or play_data.get("video_url")
+                
+                sub_list = play_data.get("subtitle") or play_data.get("subtitle_list") or []
                 
                 # Fetch Indonesian subtitle if available
                 sub_url = None
@@ -223,7 +331,7 @@ async def auto_mode_loop():
                 
                 drama_id = str(drama_id)
                 if drama_id not in processed_ids:
-                    title = drama.get("name") or drama.get("title") or "Unknown"
+                    title = drama.get("name") or drama.get("title") or "Tidak Diketahui"
                     logger.info(f"✨ New drama found: {title} ({drama_id})")
                     
                     try:
