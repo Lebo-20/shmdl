@@ -24,52 +24,49 @@ def merge_and_hardsub(video_dir: str, output_path: str):
         videos.sort()
         
         processed_videos = []
+        # First, check if ANY subtitle exists to determine if we need any re-encoding
+        any_sub_exists = any(os.path.exists(os.path.join(video_dir, f.replace(".mp4", ".srt"))) for f in videos)
         
-        for video_file in videos:
-            ep_str = video_file.replace("ep_", "").replace(".mp4", "")
-            sub_file = f"ep_{ep_str}.srt"
-            sub_path = os.path.join(video_dir, sub_file)
-            input_path = os.path.join(video_dir, video_file)
-            temp_output = os.path.join(video_dir, f"hard_{video_file}")
-            
-            # If subtitle exists, burn it
-            if os.path.exists(sub_path):
-                # FFmpeg subtitles filter syntax for Windows needs escaping of path
-                # Path like C:\foo\bar.srt -> C\\:/foo/bar.srt or similar
-                # For Windows paths in FFmpeg filter: replace \ with / and escape : 
-                sub_path_fixed = sub_path.replace("\\", "/").replace(":", "\\:")
+        if not any_sub_exists:
+            logger.info("No subtitles found for any episode. Skipping all hardsub processing.")
+            processed_videos = videos
+        else:
+            for video_file in videos:
+                ep_str = video_file.replace("ep_", "").replace(".mp4", "")
+                sub_file = f"ep_{ep_str}.srt"
+                sub_path = os.path.join(video_dir, sub_file)
+                input_path = os.path.join(video_dir, video_file)
+                temp_output = os.path.join(video_dir, f"hard_{video_file}")
                 
-                # ASS Style string: Fontname, FontSize, PrimaryColour, Bold, Outline, MarginV
-                # PrimaryColour is in BGR hex format: &HAABBGGRR. White is &H00FFFFFF.
-                style = f"Fontname=Standard Symbols PS,Fontsize=10,PrimaryColour=&H00FFFFFF,Bold=1,Outline=1,OutlineColour=&H000000,MarginV=90"
-                
-                command = [
-                    "ffmpeg", "-y", "-i", input_path,
-                    "-vf", f"subtitles='{sub_path_fixed}':force_style='{style}'",
-                    "-c:v", "libx264", "-preset", "veryfast", "-crf", "23",
-                    "-c:a", "copy",
-                    temp_output
-                ]
-            else:
-                # No subtitle, just copy or encode for consistency? 
-                # Better to encode so concat works smoothly
-                command = [
-                    "ffmpeg", "-y", "-i", input_path,
-                    "-c:v", "libx264", "-preset", "veryfast", "-crf", "23",
-                    "-c:a", "copy",
-                    temp_output
-                ]
-                
-            logger.info(f"Burning subtitles for {video_file}...")
-            process = subprocess.run(command, capture_output=True, text=True)
-            if process.returncode != 0:
-                logger.error(f"FFmpeg burning failed for {video_file}:\n{process.stderr}")
-                # Fallback to copy if encoding fails? No, better return failure to investigate.
-                return False
+                # If subtitle exists, burn it (Hardsub)
+                if os.path.exists(sub_path):
+                    logger.info(f"Subtitles found for {video_file}, burning...")
+                    # FFmpeg subtitles filter syntax for Windows needs escaping of path
+                    sub_path_fixed = sub_path.replace("\\", "/").replace(":", "\\:")
+                    
+                    # ASS Style string: Fontname, FontSize, PrimaryColour, Bold, Outline, MarginV
+                    style = f"Fontname=Standard Symbols PS,Fontsize=10,PrimaryColour=&H00FFFFFF,Bold=1,Outline=1,OutlineColour=&H000000,MarginV=90"
+                    
+                    command = [
+                        "ffmpeg", "-y", "-i", input_path,
+                        "-vf", f"subtitles='{sub_path_fixed}':force_style='{style}'",
+                        "-c:v", "libx264", "-preset", "veryfast", "-crf", "23",
+                        "-c:a", "copy",
+                        temp_output
+                    ]
+                    
+                    process = subprocess.run(command, capture_output=True, text=True)
+                    if process.returncode != 0:
+                        logger.error(f"FFmpeg burning failed for {video_file}:\n{process.stderr}")
+                        return False
+                    processed_videos.append(f"hard_{video_file}")
+                else:
+                    # No subtitle for THIS video, but some exist in the set.
+                    # We skip re-encoding for this one but warn about potential concat issues.
+                    logger.info(f"No subtitles found for {video_file}, skipping hardsub.")
+                    processed_videos.append(video_file)
             
-            processed_videos.append(f"hard_{video_file}")
-            
-        # Now concat the hard-subbed videos
+        # Now concat the videos
         list_file_path = os.path.join(video_dir, "list.txt")
         with open(list_file_path, "w") as f:
             for file in processed_videos:
