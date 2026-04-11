@@ -24,6 +24,7 @@ API_HASH = os.environ.get("API_HASH", "")
 BOT_TOKEN = os.environ.get("BOT_TOKEN", "")
 ADMIN_ID = int(os.environ.get("ADMIN_ID", "0"))
 AUTO_CHANNEL = int(os.environ.get("AUTO_CHANNEL", ADMIN_ID))
+MESSAGE_THREAD_ID = int(os.environ.get("MESSAGE_THREAD_ID", "0")) or None
 PROCESSED_FILE = "processed.json"
 
 # Initialize state
@@ -166,7 +167,7 @@ async def on_post_callback(event):
     status_msg = await event.reply(f"🚀 Memproses `{drama_id}` untuk channel...")
     
     BotState.is_processing = True
-    success = await process_drama_full(drama_id, AUTO_CHANNEL, status_msg)
+    success = await process_drama_full(drama_id, AUTO_CHANNEL, status_msg, message_thread_id=MESSAGE_THREAD_ID)
     BotState.is_processing = False
     
     if success:
@@ -205,14 +206,14 @@ async def on_post(event):
     status_msg = await event.reply(f"🚀 Memproses `{drama_id}` untuk Channel...")
     
     BotState.is_processing = True
-    success = await process_drama_full(drama_id, AUTO_CHANNEL, status_msg)
+    success = await process_drama_full(drama_id, AUTO_CHANNEL, status_msg, message_thread_id=MESSAGE_THREAD_ID)
     BotState.is_processing = False
     
     if success:
         processed_ids.add(drama_id)
         save_processed(processed_ids)
 
-async def process_drama_full(drama_id, chat_id, status_msg=None):
+async def process_drama_full(drama_id, chat_id, status_msg=None, message_thread_id=None):
     """DramaWave Pipeline: Fetch -> Download with Subs -> Burn Subtitles -> Merge -> Upload."""
     try:
         detail = await get_drama_detail(drama_id)
@@ -291,7 +292,7 @@ async def process_drama_full(drama_id, chat_id, status_msg=None):
 
         # 5. Upload
         if status_msg: await status_msg.edit(f"📤 Mengunggah **{title}** ke Telegram...")
-        upload_success = await upload_drama(client, chat_id, title, description, poster, output_path)
+        upload_success = await upload_drama(client, chat_id, title, description, poster, output_path, message_thread_id=message_thread_id)
         
         if upload_success:
             if status_msg: await status_msg.delete()
@@ -335,17 +336,17 @@ async def auto_mode_loop():
                     logger.info(f"✨ New drama found: {title} ({drama_id})")
                     
                     try:
-                        await client.send_message(ADMIN_ID, f"🆕 **Auto-Detect Drama Baru!**\n🎬 {title}\n🆔 `{drama_id}`\n⏳ Sedang memproses hardsub...")
+                        await client.send_message(AUTO_CHANNEL, f"🆕 **Auto-Detect Drama Baru!**\n🎬 {title}\n🆔 `{drama_id}`\n⏳ Sedang memproses hardsub...", reply_to=MESSAGE_THREAD_ID)
                     except: pass
                     
                     BotState.is_processing = True
-                    success = await process_drama_full(drama_id, AUTO_CHANNEL)
+                    success = await process_drama_full(drama_id, AUTO_CHANNEL, message_thread_id=MESSAGE_THREAD_ID)
                     BotState.is_processing = False
                     
                     if success:
                         processed_ids.add(drama_id)
                         save_processed(processed_ids)
-                        await client.send_message(ADMIN_ID, f"✅ Sukses Post: **{title}**")
+                        await client.send_message(AUTO_CHANNEL, f"✅ Sukses Post: **{title}**", reply_to=MESSAGE_THREAD_ID)
                     else:
                         logger.error(f"Failed to process {title}")
                         # Don't stop auto-mode, just skip and maybe log error
