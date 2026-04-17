@@ -6,13 +6,17 @@ logger = logging.getLogger(__name__)
 
 BASE_URL = "https://shortmax.dramabos.my.id/api/v1"
 TOKEN = "A8D6AB170F7B89F2182561D3B32F390D"
+HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36",
+    "Referer": "https://shortmax.dramabos.my.id/"
+}
 
 async def get_popular_feed(page=1):
     """Fetches popular dramas from the Shortmax v1 API."""
     url = f"{BASE_URL}/popular"
     params = {"lang": "id", "page": page}
     
-    async with httpx.AsyncClient(timeout=30) as client:
+    async with httpx.AsyncClient(timeout=30, headers=HEADERS) as client:
         try:
             response = await client.get(url, params=params)
             response.raise_for_status()
@@ -36,7 +40,7 @@ async def get_drama_detail(drama_id: str):
         "code": TOKEN
     }
     
-    async with httpx.AsyncClient(timeout=30) as client:
+    async with httpx.AsyncClient(timeout=30, headers=HEADERS) as client:
         try:
             response = await client.get(url, params=params)
             response.raise_for_status()
@@ -54,7 +58,7 @@ async def search_drama(query: str):
         "lang": "id"
     }
     
-    async with httpx.AsyncClient(timeout=30) as client:
+    async with httpx.AsyncClient(timeout=30, headers=HEADERS) as client:
         try:
             response = await client.get(url, params=params)
             response.raise_for_status()
