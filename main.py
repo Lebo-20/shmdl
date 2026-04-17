@@ -270,9 +270,11 @@ async def on_post(event):
 async def process_drama_full(drama_id, chat_id, status_msg=None, message_thread_id=None):
     """DramaWave Pipeline: Fetch -> Download with Subs -> Burn Subtitles -> Merge -> Upload."""
     try:
-        detail = await get_drama_detail(drama_id)
+        detail, error_msg = await get_drama_detail(drama_id)
         if not detail:
-            if status_msg: await status_msg.edit(f"❌ Drama `{drama_id}` tidak ditemukan.")
+            error_txt = f"❌ Gagal mengambil detail drama: {error_msg}" if error_msg else f"❌ Drama `{drama_id}` tidak ditemukan."
+            if status_msg: await status_msg.edit(error_txt)
+            logger.error(f"Failed to fetch detail for {drama_id}: {error_msg}")
             return False
 
         title = detail.get("name") or detail.get("title") or f"Drama_{drama_id}"

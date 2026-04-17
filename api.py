@@ -4,8 +4,15 @@ import json
 
 logger = logging.getLogger(__name__)
 
-BASE_URL = "https://shortmax.dramabos.my.id/api/v1"
-TOKEN = "A8D6AB170F7B89F2182561D3B32F390D"
+import os
+from dotenv import load_dotenv
+
+load_dotenv()
+
+logger = logging.getLogger(__name__)
+
+BASE_URL = os.environ.get("API_BASE_URL", "https://shortmax.dramabos.my.id/api/v1")
+TOKEN = os.environ.get("API_TOKEN", "A8D6AB170F7B89F2182561D3B32F390D")
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36",
     "Referer": "https://shortmax.dramabos.my.id/"
@@ -45,10 +52,16 @@ async def get_drama_detail(drama_id: str):
             response = await client.get(url, params=params)
             response.raise_for_status()
             data = response.json()
-            return data.get("data")
+            
+            if "error" in data:
+                error_msg = data.get('error')
+                logger.error(f"API Error for {drama_id}: {error_msg}")
+                return None, error_msg
+                
+            return data.get("data"), None
         except Exception as e:
             logger.error(f"Error fetching drama detail for {drama_id}: {e}")
-            return None
+            return None, str(e)
 
 async def search_drama(query: str):
     """Searches for a drama by name using the Shortmax v1 API."""
@@ -76,7 +89,7 @@ async def search_drama(query: str):
 # or we just remove it and refactor main.py to use detail["items"].
 async def get_episode_data(drama_id: str, ep_num: int):
     """Fetches episode data. Since all episodes are in detail, we must fetch detail first."""
-    detail = await get_drama_detail(drama_id)
+    detail, error = await get_drama_detail(drama_id)
     if not detail or "episodes" not in detail:
         return None
     
