@@ -10,6 +10,10 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
+# Initialize logging
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+logger = logging.getLogger(__name__)
+
 # Local imports
 from api import (
     get_drama_detail, get_episode_data, get_popular_feed, search_drama
@@ -100,9 +104,6 @@ def mark_as_processed(drama_id, title="Unknown"):
 init_db()
 processed_ids = load_processed()
 
-# Initialize logging
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
-logger = logging.getLogger(__name__)
 
 class BotState:
     is_auto_running = True
