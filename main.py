@@ -275,7 +275,6 @@ async def process_drama_full(drama_id, chat_id, status_msg=None, message_thread_
     try:
         detail, error_msg = await get_drama_detail(drama_id)
         if not detail:
-            # Detect premium/token error specifically
             is_premium_err = error_msg and "premium" in error_msg.lower()
             error_txt = f"❌ Gagal mengambil detail drama: {error_msg}" if error_msg else f"❌ Drama `{drama_id}` tidak ditemukan."
             if status_msg: await status_msg.edit(error_txt)
@@ -287,76 +286,113 @@ async def process_drama_full(drama_id, chat_id, status_msg=None, message_thread_
         title = detail.get("name") or detail.get("title") or f"Drama_{drama_id}"
         description = detail.get("description") or detail.get("intro") or detail.get("summary") or "Tidak ada deskripsi."
         poster = detail.get("cover") or detail.get("poster") or ""
-        total_eps = detail.get("episodes_count") or detail.get("max_episode") or 0
-        
+
+        # ── Deteksi sumber episode ──────────────────────────────────────
+        # Primary API:  detail["episodes"] = list of episode dicts
+        # Backup API:   detail["episodes"] = int (total count)
+        #               detail["total_episodes"] = int (set oleh backup_get_drama_detail)
+        raw_episodes = detail.get("episodes")
+        if isinstance(raw_episodes, list) and raw_episodes:
+            # ✅ Primary API — episode list tersedia
+            detail_items = raw_episodes
+            total_eps = len(detail_items)
+            use_backup_play = False
+        else:
+            # ✅ Backup API — episodes hanya angka, harus fetch per episode via /play
+            detail_items = []
+            total_eps = (
+                detail.get("total_episodes")          # set oleh backup_get_drama_detail
+                or (raw_episodes if isinstance(raw_episodes, int) else 0)
+                or detail.get("episodes_count")
+                or detail.get("max_episode")
+                or 0
+            )
+            use_backup_play = True
+
+        if total_eps == 0:
+            if status_msg: await status_msg.edit(f"❌ Jumlah episode tidak diketahui untuk `{drama_id}`.")
+            logger.error(f"total_eps=0 for {drama_id}, detail keys: {list(detail.keys())}")
+            return False
+
         if status_msg: await status_msg.edit(f"🎬 Memproses **{title}** ({total_eps} episode)...")
 
         temp_dir = tempfile.mkdtemp(prefix=f"dw_{drama_id}_")
         video_dir = os.path.join(temp_dir, "episodes")
         os.makedirs(video_dir, exist_ok=True)
 
-        # 3. Download episodes (1 -> total_eps)
-        # We fetch detail once to get all episodes
-        detail_items = detail.get("episodes", [])
-        total_eps = len(detail_items) if detail_items else total_eps
-        
-        semaphore = asyncio.Semaphore(5)
-        
+        semaphore = asyncio.Semaphore(3)  # dikurangi agar tidak flood CDN
+
         async def download_task(ep_num):
             async with semaphore:
-                # ep_num is 1-indexed, get from detail_items directly instead of making an API call per ep
-                if ep_num - 1 >= len(detail_items):
-                    return False
-                play_data = detail_items[ep_num - 1]
-                
-                # Extraction logic for version 1 API
-                video_val = play_data.get("video")
                 video_url = None
-                if isinstance(video_val, dict):
-                    video_url = video_val.get("video_720") or video_val.get("video_480") or next(iter(video_val.values()), None)
-                elif isinstance(video_val, str):
-                    video_url = video_val
-                
-                # Fallback for old structure
-                if not video_url:
-                    video_url = play_data.get("1080p_mp4") or play_data.get("720p_mp4") or play_data.get("video_url")
-                
-                sub_list = play_data.get("subtitle") or play_data.get("subtitle_list") or []
-                
-                # Fetch Indonesian subtitle if available
                 sub_url = None
-                if isinstance(sub_list, list):
-                    for s in sub_list:
-                        # Priority: id-ID, then id, then English as fallback
-                        lang = s.get("language") or s.get("lang") or ""
-                        if lang in ["id-ID", "id", "in"]:
-                            sub_url = s.get("subtitle") or s.get("vtt")
-                            break
-                    if not sub_url and sub_list:
-                        sub_url = sub_list[0].get("subtitle") or sub_list[0].get("vtt") # Take first as fallback
-                
-                if not video_url: return False
+
+                if use_backup_play:
+                    # ── Backup API: ambil URL via /play/:code?ep=N ──────
+                    from api import backup_get_play_url
+                    video_url = await backup_get_play_url(str(drama_id), ep_num)
+                    sub_url = None  # backup API tidak sertakan subtitle
+                else:
+                    # ── Primary API: ambil dari detail_items list ───────
+                    if ep_num - 1 >= len(detail_items):
+                        return False
+                    play_data = detail_items[ep_num - 1]
+
+                    video_val = play_data.get("video")
+                    if isinstance(video_val, dict):
+                        video_url = (
+                            video_val.get("video_1080")
+                            or video_val.get("video_720")
+                            or video_val.get("video_480")
+                            or next(iter(video_val.values()), None)
+                        )
+                    elif isinstance(video_val, str):
+                        video_url = video_val
+
+                    if not video_url:
+                        video_url = play_data.get("1080p_mp4") or play_data.get("720p_mp4") or play_data.get("video_url")
+
+                    sub_list = play_data.get("subtitle") or play_data.get("subtitle_list") or []
+                    if isinstance(sub_list, list):
+                        for s in sub_list:
+                            lang = s.get("language") or s.get("lang") or ""
+                            if lang in ["id-ID", "id", "in"]:
+                                sub_url = s.get("subtitle") or s.get("vtt")
+                                break
+                        if not sub_url and sub_list:
+                            sub_url = sub_list[0].get("subtitle") or sub_list[0].get("vtt")
+
+                if not video_url:
+                    logger.error(f"No video URL for ep {ep_num} of drama {drama_id}")
+                    return False
+
+                logger.info(f"Downloading ep {ep_num}/{total_eps}: {video_url[:60]}...")
                 return await download_episode_with_subs(ep_num, video_url, sub_url, video_dir)
 
         download_results = await asyncio.gather(*(download_task(i) for i in range(1, total_eps + 1)))
-        
-        if not all(download_results):
-            if status_msg: await status_msg.edit(f"❌ Gagal mendownload beberapa episode.")
-            # return False # Continue anyway? Or return False. Standard is return False.
 
-        # 4. Hardsub and Merge
+        failed = [i+1 for i, ok in enumerate(download_results) if not ok]
+        if failed:
+            logger.error(f"Download gagal untuk episode: {failed}")
+            if status_msg: await status_msg.edit(f"❌ Gagal mendownload episode: {failed}")
+            return False  # ← STOP jika ada episode yang gagal
+
+        # ── Hardsub & Merge ─────────────────────────────────────────────
         if status_msg: await status_msg.edit(f"🔥 Membakar subtitle & menggabungkan video...")
         output_path = os.path.join(temp_dir, f"{title}.mp4")
-        
+
         merge_success = await asyncio.get_event_loop().run_in_executor(None, merge_and_hardsub, video_dir, output_path)
         if not merge_success:
             if status_msg: await status_msg.edit("❌ Proses Hardsub/Merge Gagal.")
             return False
 
-        # 5. Upload
+        # ── Upload ───────────────────────────────────────────────────────
         if status_msg: await status_msg.edit(f"📤 Mengunggah **{title}** ke Telegram...")
-        upload_success = await upload_drama(client, chat_id, title, description, poster, output_path, message_thread_id=message_thread_id, status_msg=status_msg)
-        
+        upload_success = await upload_drama(
+            client, chat_id, title, description, poster, output_path,
+            message_thread_id=message_thread_id, status_msg=status_msg
+        )
+
         if upload_success:
             if status_msg: await status_msg.delete()
             return True
@@ -365,12 +401,13 @@ async def process_drama_full(drama_id, chat_id, status_msg=None, message_thread_
             return False
 
     except Exception as e:
-        logger.error(f"Error processing drama {drama_id}: {e}")
+        logger.error(f"Error processing drama {drama_id}: {e}", exc_info=True)
         if status_msg: await status_msg.edit(f"❌ Error: {e}")
         return False
     finally:
         if 'temp_dir' in locals() and os.path.exists(temp_dir):
             shutil.rmtree(temp_dir)
+
 
 async def auto_mode_loop():
     logger.info("🚀 DramaWave Auto-Mode Active.")
