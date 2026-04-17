@@ -422,9 +422,9 @@ async def auto_mode_loop():
                         break  # Keluar dari loop drama, tidak perlu coba drama lain
                     elif result:
                         mark_as_processed(drama_id, title)
-                        await client.send_message(ADMIN_ID, f"✅ Sukses Post: **{title}**\n😴 Menunggu 20 menit untuk istirahat...")
-                        logger.info(f"Successfully processed {title}. Sleeping for 20 minutes...")
-                        await asyncio.sleep(20 * 60) # 20 minutes break
+                        await client.send_message(ADMIN_ID, f"✅ Sukses Post: **{title}**\n😴 Istirahat 30 menit sebelum lanjut...")
+                        logger.info(f"Successfully processed {title}. Sleeping for 30 minutes...")
+                        await asyncio.sleep(30 * 60) # 30 minutes break
                     else:
                         logger.error(f"Failed to process {title}")
                         await asyncio.sleep(15) # Short wait on failure before next drama
