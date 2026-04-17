@@ -292,7 +292,7 @@ async def process_drama_full(drama_id, chat_id, status_msg=None, message_thread_
 
         # 5. Upload
         if status_msg: await status_msg.edit(f"📤 Mengunggah **{title}** ke Telegram...")
-        upload_success = await upload_drama(client, chat_id, title, description, poster, output_path, message_thread_id=message_thread_id)
+        upload_success = await upload_drama(client, chat_id, title, description, poster, output_path, message_thread_id=message_thread_id, status_msg=status_msg)
         
         if upload_success:
             if status_msg: await status_msg.delete()
@@ -336,22 +336,23 @@ async def auto_mode_loop():
                     logger.info(f"✨ New drama found: {title} ({drama_id})")
                     
                     try:
-                        await client.send_message(AUTO_CHANNEL, f"🆕 **Auto-Detect Drama Baru!**\n🎬 {title}\n🆔 `{drama_id}`\n⏳ Sedang memproses hardsub...", reply_to=MESSAGE_THREAD_ID)
-                    except: pass
+                        status_msg = await client.send_message(ADMIN_ID, f"🆕 **Auto-Detect Drama Baru!**\n🎬 {title}\n🆔 `{drama_id}`\n⏳ Sedang memproses hardsub...")
+                    except: status_msg = None
                     
                     BotState.is_processing = True
-                    success = await process_drama_full(drama_id, AUTO_CHANNEL, message_thread_id=MESSAGE_THREAD_ID)
+                    success = await process_drama_full(drama_id, AUTO_CHANNEL, status_msg=status_msg, message_thread_id=MESSAGE_THREAD_ID)
                     BotState.is_processing = False
                     
                     if success:
                         processed_ids.add(drama_id)
                         save_processed(processed_ids)
-                        await client.send_message(AUTO_CHANNEL, f"✅ Sukses Post: **{title}**", reply_to=MESSAGE_THREAD_ID)
+                        await client.send_message(ADMIN_ID, f"✅ Sukses Post: **{title}**\n😴 Menunggu 20 menit untuk istirahat...")
+                        logger.info(f"Successfully processed {title}. Sleeping for 20 minutes...")
+                        await asyncio.sleep(20 * 60) # 20 minutes break
                     else:
                         logger.error(f"Failed to process {title}")
-                        # Don't stop auto-mode, just skip and maybe log error
-                    
-                    await asyncio.sleep(15) # Rate limit protection
+                        await asyncio.sleep(15) # Short wait on failure before next drama
+
 
             is_initial = False
             await asyncio.sleep(3600) # Check every hour
