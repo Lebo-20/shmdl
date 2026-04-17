@@ -94,8 +94,9 @@ async def backup_search_drama(query: str, page: int = 1) -> list:
 # ─────────────────────────────────────────────
 async def backup_get_drama_detail(code: str) -> tuple[dict | None, str | None]:
     """Get drama detail via backup API.
-    Response fields: id, code, name, cover, episodes(int), summary
-    NOTE: episodes is a COUNT (int), not a list — use backup_get_play_url per episode.
+    Response fields: id, code, name, cover, summary
+    episodes field: can be int (count) OR list of episode dicts with video URLs.
+    We preserve whatever the API returns.
     """
     data = await _backup_request(f"/detail/{code}", {"lang": "id"})
     if not data:
@@ -107,8 +108,24 @@ async def backup_get_drama_detail(code: str) -> tuple[dict | None, str | None]:
         # Normalise 'name' -> 'title'
         if "name" in detail and "title" not in detail:
             detail["title"] = detail["name"]
-        # 'episodes' here is an int (total count), not a list
-        detail["total_episodes"] = detail.get("episodes", 0)
+        # Preserve episode list; only set total_episodes when episodes is an int
+        raw_ep = detail.get("episodes")
+        if isinstance(raw_ep, int):
+            detail["total_episodes"] = raw_ep
+        elif isinstance(raw_ep, list):
+            detail["total_episodes"] = len(raw_ep)
+            # Normalise video quality field for each ep (same as primary API)
+            for ep in raw_ep:
+                if "video" not in ep:
+                    continue
+                v = ep["video"]
+                if isinstance(v, dict):
+                    ep["video_url"] = (
+                        v.get("video_1080")
+                        or v.get("video_720")
+                        or v.get("video_480")
+                        or next(iter(v.values()), None)
+                    )
     return detail, None
 
 

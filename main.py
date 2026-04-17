@@ -338,19 +338,23 @@ async def process_drama_full(drama_id, chat_id, status_msg=None, message_thread_
                         return False
                     play_data = detail_items[ep_num - 1]
 
-                    video_val = play_data.get("video")
-                    if isinstance(video_val, dict):
-                        video_url = (
-                            video_val.get("video_1080")
-                            or video_val.get("video_720")
-                            or video_val.get("video_480")
-                            or next(iter(video_val.values()), None)
-                        )
-                    elif isinstance(video_val, str):
-                        video_url = video_val
+                    # Gunakan video_url yang sudah dinormalisasi oleh backup_get_drama_detail
+                    video_url = play_data.get("video_url")
 
                     if not video_url:
-                        video_url = play_data.get("1080p_mp4") or play_data.get("720p_mp4") or play_data.get("video_url")
+                        video_val = play_data.get("video")
+                        if isinstance(video_val, dict):
+                            video_url = (
+                                video_val.get("video_1080")
+                                or video_val.get("video_720")
+                                or video_val.get("video_480")
+                                or next(iter(video_val.values()), None)
+                            )
+                        elif isinstance(video_val, str):
+                            video_url = video_val
+
+                    if not video_url:
+                        video_url = play_data.get("1080p_mp4") or play_data.get("720p_mp4")
 
                     sub_list = play_data.get("subtitle") or play_data.get("subtitle_list") or []
                     if isinstance(sub_list, list):
