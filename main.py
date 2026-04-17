@@ -27,20 +27,77 @@ AUTO_CHANNEL = int(os.environ.get("AUTO_CHANNEL", ADMIN_ID))
 MESSAGE_THREAD_ID = int(os.environ.get("MESSAGE_THREAD_ID", "0")) or None
 PROCESSED_FILE = "processed.json"
 
+import psycopg2
+from psycopg2.extras import execute_values
+
+DATABASE_URL = os.environ.get("DATABASE_URL")
+
+def init_db():
+    if not DATABASE_URL:
+        logger.info("📡 No DATABASE_URL found. Using local JSON only.")
+        return
+    try:
+        conn = psycopg2.connect(DATABASE_URL)
+        cur = conn.cursor()
+        cur.execute("CREATE TABLE IF NOT EXISTS processed_dramas (drama_id TEXT PRIMARY KEY, title TEXT, processed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)")
+        conn.commit()
+        cur.close()
+        conn.close()
+        logger.info("✅ PostgreSQL Database initialized.")
+    except Exception as e:
+        logger.error(f"❌ Failed to initialize database: {e}")
+
 # Initialize state
 def load_processed():
+    ids = set()
+    # Load from local file
     if os.path.exists(PROCESSED_FILE):
         try:
             with open(PROCESSED_FILE, "r") as f:
-                return set(json.load(f))
+                ids.update(json.load(f))
         except:
-            return set()
-    return set()
+            pass
+    
+    # Load from DB if available
+    if DATABASE_URL:
+        try:
+            conn = psycopg2.connect(DATABASE_URL)
+            cur = conn.cursor()
+            cur.execute("SELECT drama_id FROM processed_dramas")
+            db_ids = [row[0] for row in cur.fetchall()]
+            ids.update(db_ids)
+            cur.close()
+            conn.close()
+            logger.info(f"📥 Loaded {len(db_ids)} entries from Database.")
+        except Exception as e:
+            logger.error(f"Error loading from DB: {e}")
+            
+    return ids
 
 def save_processed(data):
+    # Save to local file
     with open(PROCESSED_FILE, "w") as f:
         json.dump(list(data), f)
 
+def mark_as_processed(drama_id, title="Unknown"):
+    processed_ids.add(str(drama_id))
+    save_processed(processed_ids)
+    
+    if DATABASE_URL:
+        try:
+            conn = psycopg2.connect(DATABASE_URL)
+            cur = conn.cursor()
+            cur.execute(
+                "INSERT INTO processed_dramas (drama_id, title) VALUES (%s, %s) ON CONFLICT (drama_id) DO NOTHING",
+                (str(drama_id), title)
+            )
+            conn.commit()
+            cur.close()
+            conn.close()
+        except Exception as e:
+            logger.error(f"Error saving to DB: {e}")
+
+init_db()
 processed_ids = load_processed()
 
 # Initialize logging
@@ -148,8 +205,7 @@ async def on_dl_callback(event):
     BotState.is_processing = False
     
     if success:
-        processed_ids.add(drama_id)
-        save_processed(processed_ids)
+        mark_as_processed(drama_id)
 
 @client.on(events.CallbackQuery(data=re.compile(b"post_(.+)")))
 async def on_post_callback(event):
@@ -171,8 +227,7 @@ async def on_post_callback(event):
     BotState.is_processing = False
     
     if success:
-        processed_ids.add(drama_id)
-        save_processed(processed_ids)
+        mark_as_processed(drama_id)
 
 @client.on(events.NewMessage(pattern=r'/download ([\w-]+)'))
 async def on_download(event):
@@ -191,8 +246,7 @@ async def on_download(event):
     BotState.is_processing = False
     
     if success:
-        processed_ids.add(drama_id)
-        save_processed(processed_ids)
+        mark_as_processed(drama_id)
 
 @client.on(events.NewMessage(pattern=r'/post ([\w-]+)'))
 async def on_post(event):
@@ -210,8 +264,7 @@ async def on_post(event):
     BotState.is_processing = False
     
     if success:
-        processed_ids.add(drama_id)
-        save_processed(processed_ids)
+        mark_as_processed(drama_id)
 
 async def process_drama_full(drama_id, chat_id, status_msg=None, message_thread_id=None):
     """DramaWave Pipeline: Fetch -> Download with Subs -> Burn Subtitles -> Merge -> Upload."""
@@ -344,8 +397,7 @@ async def auto_mode_loop():
                     BotState.is_processing = False
                     
                     if success:
-                        processed_ids.add(drama_id)
-                        save_processed(processed_ids)
+                        mark_as_processed(drama_id, title)
                         await client.send_message(ADMIN_ID, f"✅ Sukses Post: **{title}**\n😴 Menunggu 20 menit untuk istirahat...")
                         logger.info(f"Successfully processed {title}. Sleeping for 20 minutes...")
                         await asyncio.sleep(20 * 60) # 20 minutes break
