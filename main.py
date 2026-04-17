@@ -267,14 +267,21 @@ async def on_post(event):
     if success:
         mark_as_processed(drama_id)
 
+# Sentinel value to distinguish premium token errors from regular failures
+PREMIUM_ERROR = "PREMIUM_ERROR"
+
 async def process_drama_full(drama_id, chat_id, status_msg=None, message_thread_id=None):
     """DramaWave Pipeline: Fetch -> Download with Subs -> Burn Subtitles -> Merge -> Upload."""
     try:
         detail, error_msg = await get_drama_detail(drama_id)
         if not detail:
+            # Detect premium/token error specifically
+            is_premium_err = error_msg and "premium" in error_msg.lower()
             error_txt = f"❌ Gagal mengambil detail drama: {error_msg}" if error_msg else f"❌ Drama `{drama_id}` tidak ditemukan."
             if status_msg: await status_msg.edit(error_txt)
             logger.error(f"Failed to fetch detail for {drama_id}: {error_msg}")
+            if is_premium_err:
+                return PREMIUM_ERROR
             return False
 
         title = detail.get("name") or detail.get("title") or f"Drama_{drama_id}"
@@ -396,10 +403,24 @@ async def auto_mode_loop():
                     except: status_msg = None
                     
                     BotState.is_processing = True
-                    success = await process_drama_full(drama_id, AUTO_CHANNEL, status_msg=status_msg, message_thread_id=MESSAGE_THREAD_ID)
+                    result = await process_drama_full(drama_id, AUTO_CHANNEL, status_msg=status_msg, message_thread_id=MESSAGE_THREAD_ID)
                     BotState.is_processing = False
                     
-                    if success:
+                    if result == PREMIUM_ERROR:
+                        # Token tidak valid / tidak premium — hentikan auto mode
+                        logger.error("AUTO MODE: Premium token error detected. Stopping auto mode.")
+                        BotState.is_auto_running = False
+                        try:
+                            await client.send_message(
+                                ADMIN_ID,
+                                "⛔ **AUTO MODE DIHENTIKAN**\n\n"
+                                "Token API tidak memiliki akses premium.\n"
+                                "Silakan perbarui `API_TOKEN` di file `.env` dengan token premium yang valid,\n"
+                                "lalu ketik /panel dan tekan **Mulai Auto** untuk melanjutkan."
+                            )
+                        except: pass
+                        break  # Keluar dari loop drama, tidak perlu coba drama lain
+                    elif result:
                         mark_as_processed(drama_id, title)
                         await client.send_message(ADMIN_ID, f"✅ Sukses Post: **{title}**\n😴 Menunggu 20 menit untuk istirahat...")
                         logger.info(f"Successfully processed {title}. Sleeping for 20 minutes...")
