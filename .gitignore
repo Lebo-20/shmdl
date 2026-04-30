@@ -6,4 +6,5 @@ __pycache__/
 *.srt
 list.txt
 processed.json
+failures.json
 tmp/

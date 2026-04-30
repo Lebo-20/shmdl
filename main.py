@@ -44,6 +44,15 @@ def init_db():
         conn = psycopg2.connect(DATABASE_URL)
         cur = conn.cursor()
         cur.execute("CREATE TABLE IF NOT EXISTS processed_dramas (drama_id TEXT PRIMARY KEY, title TEXT, processed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)")
+        # New table for failure tracking
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS failed_dramas (
+                drama_id TEXT PRIMARY KEY, 
+                title TEXT, 
+                fail_count INTEGER DEFAULT 0, 
+                last_fail_date DATE DEFAULT CURRENT_DATE
+            )
+        """)
         conn.commit()
         cur.close()
         conn.close()
@@ -54,11 +63,17 @@ def init_db():
 # Initialize state
 def load_processed():
     ids = set()
+    titles = set()
     # Load from local file
     if os.path.exists(PROCESSED_FILE):
         try:
             with open(PROCESSED_FILE, "r") as f:
-                ids.update(json.load(f))
+                data = json.load(f)
+                if isinstance(data, list):
+                    ids.update(data)
+                elif isinstance(data, dict):
+                    ids.update(data.get("ids", []))
+                    titles.update(data.get("titles", []))
         except:
             pass
     
@@ -67,42 +82,102 @@ def load_processed():
         try:
             conn = psycopg2.connect(DATABASE_URL)
             cur = conn.cursor()
-            cur.execute("SELECT drama_id FROM processed_dramas")
-            db_ids = [row[0] for row in cur.fetchall()]
-            ids.update(db_ids)
+            cur.execute("SELECT drama_id, title FROM processed_dramas")
+            rows = cur.fetchall()
+            for row in rows:
+                ids.add(row[0])
+                if row[1]: titles.add(row[1].lower().strip())
             cur.close()
             conn.close()
-            logger.info(f"📥 Loaded {len(db_ids)} entries from Database.")
+            logger.info(f"📥 Loaded {len(rows)} entries from Database.")
         except Exception as e:
             logger.error(f"Error loading from DB: {e}")
             
-    return ids
+    return ids, titles
 
-def save_processed(data):
+def save_processed(ids, titles):
     # Save to local file
     with open(PROCESSED_FILE, "w") as f:
-        json.dump(list(data), f)
+        json.dump({"ids": list(ids), "titles": list(titles)}, f)
 
 def mark_as_processed(drama_id, title="Unknown"):
     processed_ids.add(str(drama_id))
-    save_processed(processed_ids)
+    processed_titles.add(title.lower().strip())
+    save_processed(processed_ids, processed_titles)
     
     if DATABASE_URL:
         try:
             conn = psycopg2.connect(DATABASE_URL)
             cur = conn.cursor()
             cur.execute(
-                "INSERT INTO processed_dramas (drama_id, title) VALUES (%s, %s) ON CONFLICT (drama_id) DO NOTHING",
+                "INSERT INTO processed_dramas (drama_id, title) VALUES (%s, %s) ON CONFLICT (drama_id) DO UPDATE SET title = EXCLUDED.title",
                 (str(drama_id), title)
             )
+            # Clear failures on success
+            cur.execute("DELETE FROM failed_dramas WHERE drama_id = %s", (str(drama_id),))
             conn.commit()
             cur.close()
             conn.close()
         except Exception as e:
             logger.error(f"Error saving to DB: {e}")
 
+FAILURES_FILE = "failures.json"
+def load_failures():
+    if DATABASE_URL:
+        try:
+            conn = psycopg2.connect(DATABASE_URL)
+            cur = conn.cursor()
+            cur.execute("SELECT drama_id, fail_count, last_fail_date FROM failed_dramas")
+            rows = cur.fetchall()
+            failures = {row[0]: {"count": row[1], "date": str(row[2])} for row in rows}
+            cur.close()
+            conn.close()
+            return failures
+        except Exception as e:
+            logger.error(f"Error loading failures from DB: {e}")
+            
+    if os.path.exists(FAILURES_FILE):
+        try:
+            with open(FAILURES_FILE, "r") as f:
+                return json.load(f)
+        except:
+            pass
+    return {}
+
+def mark_as_failed(drama_id, title="Unknown"):
+    from datetime import date
+    today = str(date.today())
+    failures = load_failures()
+    
+    if drama_id in failures and failures[drama_id]["date"] == today:
+        failures[drama_id]["count"] += 1
+    else:
+        failures[drama_id] = {"count": 1, "date": today}
+    
+    with open(FAILURES_FILE, "w") as f:
+        json.dump(failures, f)
+        
+    if DATABASE_URL:
+        try:
+            conn = psycopg2.connect(DATABASE_URL)
+            cur = conn.cursor()
+            cur.execute("""
+                INSERT INTO failed_dramas (drama_id, title, fail_count, last_fail_date) 
+                VALUES (%s, %s, %s, %s) 
+                ON CONFLICT (drama_id) DO UPDATE SET 
+                    fail_count = CASE WHEN failed_dramas.last_fail_date = EXCLUDED.last_fail_date THEN failed_dramas.fail_count + 1 ELSE 1 END,
+                    last_fail_date = EXCLUDED.last_fail_date,
+                    title = EXCLUDED.title
+            """, (str(drama_id), title, 1, today))
+            conn.commit()
+            cur.close()
+            conn.close()
+        except Exception as e:
+            logger.error(f"Error saving failure to DB: {e}")
+
 init_db()
-processed_ids = load_processed()
+processed_ids, processed_titles = load_processed()
+
 
 
 class BotState:
@@ -119,7 +194,7 @@ def get_panel_buttons():
         [Button.inline(f"📊 Status: {status_text}", b"status")]
     ]
 
-@client.on(events.NewMessage(pattern='/update'))
+@client.on(events.NewMessage(pattern='/shortmax update'))
 async def update_bot(event):
     if event.sender_id != ADMIN_ID: return
     import subprocess, sys
@@ -131,7 +206,7 @@ async def update_bot(event):
     except Exception as e:
         await status_msg.edit(f"❌ Gagal update: {e}")
 
-@client.on(events.NewMessage(pattern='/panel'))
+@client.on(events.NewMessage(pattern='/shortmax panel'))
 async def panel(event):
     if event.chat_id != ADMIN_ID: return
     await event.reply("🎛 **DramaWave Control Panel**", buttons=get_panel_buttons())
@@ -153,11 +228,11 @@ async def panel_callback(event):
 
 import re
 
-@client.on(events.NewMessage(pattern='/start'))
+@client.on(events.NewMessage(pattern='/shortmax start'))
 async def start(event):
-    await event.reply("Selamat datang di Bot Downloader DramaWave! 🎉\n\nGunakan perintah `/cari {judul}` atau `/download {ID}` untuk mulai.")
+    await event.reply("Selamat datang di Bot Downloader DramaWave! 🎉\n\nGunakan perintah `/shortmax cari {judul}` atau `/shortmax download {ID}` untuk mulai.")
 
-@client.on(events.NewMessage(pattern=r'/cari (.+)'))
+@client.on(events.NewMessage(pattern=r'/shortmax cari (.+)'))
 async def on_search(event):
     query = event.pattern_match.group(1)
     status_msg = await event.reply(f"🔍 Mencari dramas untuk: `{query}`...")
@@ -230,7 +305,7 @@ async def on_post_callback(event):
     if success:
         mark_as_processed(drama_id)
 
-@client.on(events.NewMessage(pattern=r'/download ([\w-]+)'))
+@client.on(events.NewMessage(pattern=r'/shortmax download ([\w-]+)'))
 async def on_download(event):
     if not event.is_group and event.chat_id != ADMIN_ID:
         return
@@ -249,7 +324,7 @@ async def on_download(event):
     if success:
         mark_as_processed(drama_id)
 
-@client.on(events.NewMessage(pattern=r'/post ([\w-]+)'))
+@client.on(events.NewMessage(pattern=r'/shortmax post ([\w-]+)'))
 async def on_post(event):
     if event.sender_id != ADMIN_ID: return
         
@@ -321,8 +396,18 @@ async def process_drama_full(drama_id, chat_id, status_msg=None, message_thread_
         os.makedirs(video_dir, exist_ok=True)
 
         semaphore = asyncio.Semaphore(3)  # dikurangi agar tidak flood CDN
+        
+        # Track download progress
+        completed_count = 0
+        
+        def get_progress_text(phase, current, total):
+            perc = (current / total) * 100
+            filled = int(10 * perc / 100)
+            bar = "█" * filled + "░" * (10 - filled)
+            return f"**{phase}**\n`[{bar}] {perc:.1f}%` ({current}/{total})"
 
         async def download_task(ep_num):
+            nonlocal completed_count
             async with semaphore:
                 video_url = None
                 sub_url = None
@@ -370,8 +455,16 @@ async def process_drama_full(drama_id, chat_id, status_msg=None, message_thread_
                     logger.error(f"No video URL for ep {ep_num} of drama {drama_id}")
                     return False
 
-                logger.info(f"Downloading ep {ep_num}/{total_eps}: {video_url[:60]}...")
-                return await download_episode_with_subs(ep_num, video_url, sub_url, video_dir)
+                # logger.info(f"Downloading ep {ep_num}/{total_eps}: {video_url[:60]}...")
+                res = await download_episode_with_subs(ep_num, video_url, sub_url, video_dir)
+                
+                if res:
+                    completed_count += 1
+                    if status_msg:
+                        try:
+                            await status_msg.edit(get_progress_text("📥 Mendownload Episode:", completed_count, total_eps))
+                        except: pass
+                return res
 
         download_results = await asyncio.gather(*(download_task(i) for i in range(1, total_eps + 1)))
 
@@ -385,7 +478,13 @@ async def process_drama_full(drama_id, chat_id, status_msg=None, message_thread_
         if status_msg: await status_msg.edit(f"🔥 Membakar subtitle & menggabungkan video...")
         output_path = os.path.join(temp_dir, f"{title}.mp4")
 
-        merge_success = await asyncio.get_event_loop().run_in_executor(None, merge_and_hardsub, video_dir, output_path)
+        async def merge_progress(curr, total, text):
+            if status_msg:
+                try:
+                    await status_msg.edit(get_progress_text("🔥 Memproses Video:", curr, total))
+                except: pass
+
+        merge_success = await merge_and_hardsub(video_dir, output_path, progress_callback=merge_progress)
         if not merge_success:
             if status_msg: await status_msg.edit("❌ Proses Hardsub/Merge Gagal.")
             return False
@@ -435,40 +534,57 @@ async def auto_mode_loop():
                     continue
                 
                 drama_id = str(drama_id)
-                if drama_id not in processed_ids:
-                    title = drama.get("name") or drama.get("title") or "Tidak Diketahui"
-                    logger.info(f"✨ New drama found: {title} ({drama_id})")
-                    
+                title = (drama.get("name") or drama.get("title") or "Tidak Diketahui").strip()
+                title_lower = title.lower()
+                
+                # Check if already processed (ID or Title)
+                if drama_id in processed_ids or title_lower in processed_titles:
+                    logger.info(f"⏭ Skipping (already processed): {title}")
+                    continue
+                
+                # Check failures
+                failures = load_failures()
+                from datetime import date
+                today = str(date.today())
+                if drama_id in failures and failures[drama_id]["date"] == today:
+                    if failures[drama_id]["count"] >= 2:
+                        logger.warning(f"⏭ Skipping (failed 2x today): {title}")
+                        continue
+
+                logger.info(f"✨ New drama found: {title} ({drama_id})")
+                
+                try:
+                    status_msg = await client.send_message(ADMIN_ID, f"🆕 **Auto-Detect Drama Baru!**\n🎬 {title}\n🆔 `{drama_id}`\n⏳ Sedang memproses hardsub...")
+                except: status_msg = None
+                
+                BotState.is_processing = True
+                result = await process_drama_full(drama_id, AUTO_CHANNEL, status_msg=status_msg, message_thread_id=MESSAGE_THREAD_ID)
+                BotState.is_processing = False
+                
+                if result == PREMIUM_ERROR:
+                    # Token tidak valid / tidak premium — hentikan auto mode
+                    logger.error("AUTO MODE: Premium token error detected. Stopping auto mode.")
+                    BotState.is_auto_running = False
                     try:
-                        status_msg = await client.send_message(ADMIN_ID, f"🆕 **Auto-Detect Drama Baru!**\n🎬 {title}\n🆔 `{drama_id}`\n⏳ Sedang memproses hardsub...")
-                    except: status_msg = None
-                    
-                    BotState.is_processing = True
-                    result = await process_drama_full(drama_id, AUTO_CHANNEL, status_msg=status_msg, message_thread_id=MESSAGE_THREAD_ID)
-                    BotState.is_processing = False
-                    
-                    if result == PREMIUM_ERROR:
-                        # Token tidak valid / tidak premium — hentikan auto mode
-                        logger.error("AUTO MODE: Premium token error detected. Stopping auto mode.")
-                        BotState.is_auto_running = False
-                        try:
-                            await client.send_message(
-                                ADMIN_ID,
-                                "⛔ **AUTO MODE DIHENTIKAN**\n\n"
-                                "Token API tidak memiliki akses premium.\n"
-                                "Silakan perbarui `API_TOKEN` di file `.env` dengan token premium yang valid,\n"
-                                "lalu ketik /panel dan tekan **Mulai Auto** untuk melanjutkan."
-                            )
-                        except: pass
-                        break  # Keluar dari loop drama, tidak perlu coba drama lain
-                    elif result:
-                        mark_as_processed(drama_id, title)
-                        await client.send_message(ADMIN_ID, f"✅ Sukses Post: **{title}**\n😴 Istirahat 30 menit sebelum lanjut...")
-                        logger.info(f"Successfully processed {title}. Sleeping for 30 minutes...")
-                        await asyncio.sleep(30 * 60) # 30 minutes break
-                    else:
-                        logger.error(f"Failed to process {title}")
-                        await asyncio.sleep(15) # Short wait on failure before next drama
+                        await client.send_message(
+                            ADMIN_ID,
+                            "⛔ **AUTO MODE DIHENTIKAN**\n\n"
+                            "Token API tidak memiliki akses premium.\n"
+                            "Silakan perbarui `API_TOKEN` di file `.env` dengan token premium yang valid,\n"
+                            "lalu ketik /panel dan tekan **Mulai Auto** untuk melanjutkan."
+                        )
+                    except: pass
+                    break  # Keluar dari loop drama, tidak perlu coba drama lain
+                elif result:
+                    mark_as_processed(drama_id, title)
+                    await client.send_message(ADMIN_ID, f"✅ Sukses Post: **{title}**\n😴 Istirahat 2 jam sebelum lanjut...")
+                    logger.info(f"Successfully processed {title}. Sleeping for 2 hours...")
+                    await asyncio.sleep(2 * 60 * 60) # 2 hours break
+                else:
+                    logger.error(f"Failed to process {title}")
+                    mark_as_failed(drama_id, title)
+                    await asyncio.sleep(15) # Short wait on failure before next drama
+
 
 
             is_initial = False

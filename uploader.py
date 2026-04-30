@@ -6,15 +6,24 @@ import logging
 
 logger = logging.getLogger(__name__)
 
+def get_progress_bar(percentage, length=10):
+    """Generates a visual progress bar string."""
+    filled = int(length * percentage / 100)
+    bar = "█" * filled + "░" * (length - filled)
+    return f"[{bar}] {percentage:.1f}%"
+
 async def upload_progress(current, total, event, msg_text="Mengunggah..."):
     """Callback function for upload progress."""
     percentage = (current / total) * 100
-    try:
-        # Avoid flood by updating every few percentages
-        if int(percentage) % 10 == 0:
-            await event.edit(f"{msg_text} {percentage:.1f}%")
-    except:
-        pass
+    
+    # Update every 5% or if finished
+    if not hasattr(event, "_last_perc") or percentage - event._last_perc >= 5 or percentage >= 99:
+        event._last_perc = percentage
+        bar = get_progress_bar(percentage)
+        try:
+            await event.edit(f"**{msg_text}**\n`{bar}`")
+        except:
+            pass
 
 async def upload_drama(client: TelegramClient, chat_id: int, 
                        title: str, description: str, 
