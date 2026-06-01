@@ -8,13 +8,13 @@ load_dotenv()
 logger = logging.getLogger(__name__)
 
 # ─────────────────────────────────────────────
-# PRIMARY API  (shortmax.dramabos.my.id)
+# PRIMARY API  (shortmax.dramabos.online)
 # ─────────────────────────────────────────────
-PRIMARY_BASE_URL = os.environ.get("API_BASE_URL", "https://shortmax.dramabos.my.id/api/v1")
+PRIMARY_BASE_URL = os.environ.get("API_BASE_URL", "https://shortmax.dramabos.online/api/v1")
 PRIMARY_TOKEN    = os.environ.get("API_TOKEN", "A8D6AB170F7B89F2182561D3B32F390D")
 PRIMARY_HEADERS  = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36",
-    "Referer": "https://shortmax.dramabos.my.id/",
+    "Referer": "https://shortmax.dramabos.online/",
 }
 
 # ─────────────────────────────────────────────
